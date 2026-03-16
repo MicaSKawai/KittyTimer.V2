@@ -1,11 +1,11 @@
 import discord
 from discord.ext import commands, tasks
-import sqlite3
 import time
 import os
 from datetime import datetime, timedelta
 import threading
 from flask import Flask
+import libsql_experimental as libsql
 
 # ---------------- KEEP ALIVE ----------------
 
@@ -24,15 +24,54 @@ def keep_alive():
 
 keep_alive()
 
-# ---------------- TOKEN ----------------
+# ---------------- TOKENS ----------------
 
-TOKEN = os.environ["DISCORD_TOKEN"]
+TOKEN       = os.environ["DISCORD_TOKEN"]
+TURSO_URL   = os.environ["TURSO_URL"]
+TURSO_TOKEN = os.environ["TURSO_TOKEN"]
 
 # ---------------- CANALES ----------------
 
 CANAL_REGISTRO  = 1482912693680869426
 CANAL_AVISOS    = 1482912285230895205
 CANAL_DASHBOARD = 1482912464483127336
+
+# ---------------- GIFs ----------------
+
+GIF_PANEL  = "https://i.imgur.com/C8IaPT6.gif"
+GIF_AVISO  = "https://i.imgur.com/C8IaPT6.gif"
+GIF_ONLINE = "https://i.imgur.com/C8IaPT6.gif"
+
+# ---------------- BOT INFO ----------------
+
+BOT_NAME = "KittyTimer"
+BOT_ICON = "https://i.imgur.com/4M34hi2.png"
+
+# ---------------- COLORES E ICONOS ----------------
+
+COLORES = {
+    "Cajas":      0x3498db,
+    "Robo":       0xe74c3c,
+    "Capataz":    0x2ecc71,
+    "Cargas":     0x95a5a6,
+    "Plantas":    0x1abc9c,
+    "Planos x6":  0x9b59b6,
+    "Planos x8":  0xbdc3c7,
+    "Planos x10": 0xf1c40f,
+    "Test":       0xff6b6b,
+}
+
+ICONOS = {
+    "Cajas":      "📦",
+    "Robo":       "💰",
+    "Capataz":    "👷",
+    "Cargas":     "🔫",
+    "Plantas":    "🌿",
+    "Planos x6":  "🟣",
+    "Planos x8":  "⬜",
+    "Planos x10": "🟡",
+    "Test":       "🧪",
+}
 
 # ---------------- DISCORD ----------------
 
@@ -41,12 +80,12 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ---------------- DATABASE ----------------
+# ---------------- DATABASE (TURSO) ----------------
 
-db = sqlite3.connect("timers.db", check_same_thread=False)
-cursor = db.cursor()
+db = libsql.connect("timers.db", sync_url=TURSO_URL, auth_token=TURSO_TOKEN)
+db.sync()
 
-cursor.execute("""
+db.execute("""
 CREATE TABLE IF NOT EXISTS timers(
 user_id INTEGER,
 username TEXT,
@@ -58,7 +97,7 @@ mensaje INTEGER
 )
 """)
 
-cursor.execute("""
+db.execute("""
 CREATE TABLE IF NOT EXISTS ranking(
 user_id INTEGER,
 username TEXT,
@@ -67,13 +106,25 @@ cantidad INTEGER
 )
 """)
 
-cursor.execute("""
+db.execute("""
 CREATE TABLE IF NOT EXISTS dashboard(
 msg_id INTEGER
 )
 """)
 
 db.commit()
+db.sync()
+
+def db_execute(query, params=()):
+    db.execute(query, params)
+    db.commit()
+    db.sync()
+
+def db_fetchone(query, params=()):
+    return db.execute(query, params).fetchone()
+
+def db_fetchall(query, params=()):
+    return db.execute(query, params).fetchall()
 
 # ---------------- TIEMPO ----------------
 
@@ -123,64 +174,63 @@ def barra(inicio, fin):
     if restante < 0:
         restante = 0
 
-    return f"{bar} {int(porcentaje*100)}%\n⚡ Restante: {tiempo_restante(restante)}"
+    return f"{bar} **{int(porcentaje*100)}%**\n⚡ Restante: `{tiempo_restante(restante)}`"
+
+# ---------------- FOOTER ----------------
+
+def add_footer(embed):
+    embed.set_footer(text=f"{BOT_NAME} • Timer Bot", icon_url=BOT_ICON)
+    embed.timestamp = datetime.utcnow()
+    return embed
 
 # ---------------- RANKING ----------------
 
 def sumar_ranking(user_id, username, tipo):
-    cursor.execute(
+    data = db_fetchone(
         "SELECT cantidad FROM ranking WHERE user_id=? AND tipo=?",
         (user_id, tipo)
     )
-    data = cursor.fetchone()
-
     if data:
-        cursor.execute(
+        db_execute(
             "UPDATE ranking SET cantidad=cantidad+1 WHERE user_id=? AND tipo=?",
             (user_id, tipo)
         )
     else:
-        cursor.execute(
+        db_execute(
             "INSERT INTO ranking VALUES (?,?,?,1)",
             (user_id, username, tipo)
         )
 
-    db.commit()
-
 # ---------------- TIMER ----------------
 
 async def iniciar_timer(ctx, tipo, horas):
-    cursor.execute(
+    data = db_fetchone(
         "SELECT MAX(numero) FROM timers WHERE user_id=? AND tipo=?",
         (ctx.author.id, tipo)
     )
-    data = cursor.fetchone()[0]
-
-    if data is None:
-        numero = 1
-    else:
-        numero = data + 1
+    numero = 1 if data[0] is None else data[0] + 1
 
     inicio = now()
-    fin = inicio + round(horas * 3600)
+    fin    = inicio + round(horas * 3600)
+    color  = COLORES.get(tipo, 0x00ffaa)
+    icono  = ICONOS.get(tipo, "⏱")
 
-    embed = discord.Embed(
-        title=f"⏱ {tipo} #{numero}",
-        color=0x00ffaa
-    )
-    embed.add_field(name="Usuario", value=ctx.author.mention, inline=False)
-    embed.add_field(name="Progreso", value=barra(inicio, fin), inline=False)
-    embed.add_field(name="Fin ARG", value=hora_arg(fin))
-    embed.add_field(name="Fin HUB", value=hora_hub(fin))
+    embed = discord.Embed(title=f"{icono} {tipo} #{numero}", color=color)
+    embed.add_field(name="👤 Usuario",  value=ctx.author.mention,  inline=True)
+    embed.add_field(name="⏳ Duración", value=f"`{int(horas)}h`",   inline=True)
+    embed.add_field(name="\u200b",      value="\u200b",             inline=True)
+    embed.add_field(name="📊 Progreso", value=barra(inicio, fin),   inline=False)
+    embed.add_field(name="🕐 Fin ARG",  value=f"`{hora_arg(fin)}`", inline=True)
+    embed.add_field(name="🌐 Fin HUB",  value=f"`{hora_hub(fin)}`", inline=True)
+    embed.add_field(name="📅 Finaliza", value=f"<t:{fin}:R>",       inline=True)
+    add_footer(embed)
 
     msg = await ctx.send(embed=embed)
 
-    cursor.execute(
+    db_execute(
         "INSERT INTO timers VALUES (?,?,?,?,?,?,?)",
         (ctx.author.id, ctx.author.name, tipo, numero, inicio, fin, msg.id)
     )
-    db.commit()
-
     sumar_ranking(ctx.author.id, ctx.author.name, tipo)
 
 # ---------------- COMANDOS ----------------
@@ -224,26 +274,76 @@ async def test(ctx):
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def resettimers(ctx):
-    global db
-    try:
-        db.close()
-    except:
-        pass
-    if os.path.exists("timers.db"):
-        os.remove("timers.db")
-    await ctx.send("🧹 Base de datos de timers reiniciada. Reiniciando bot...")
-    os._exit(0)
+    db_execute("DELETE FROM timers")
+    db_execute("DELETE FROM dashboard")
+    embed = discord.Embed(
+        title="🧹 Base de datos reiniciada",
+        description="Todos los timers fueron eliminados.",
+        color=0xe74c3c
+    )
+    add_footer(embed)
+    await ctx.send(embed=embed)
 
-# ---------------- CANCELAR TIMER ----------------
+# ---------------- AYUDA ----------------
+
+@bot.command()
+async def ayuda(ctx):
+    embed = discord.Embed(
+        title="📖 Comandos — KittyTimer",
+        description="Todo lo que podés hacer con el bot.",
+        color=0x5865F2
+    )
+    embed.add_field(
+        name="🎮 Panel",
+        value="`!panel` — Abre el panel de botones para iniciar timers rápido",
+        inline=False
+    )
+    embed.add_field(
+        name="⏱ Timers disponibles",
+        value=(
+            "`!cajas` — 📦 Cajas · 3h\n"
+            "`!robo` — 💰 Robo · 2h\n"
+            "`!capataz` — 👷 Capataz · 6h\n"
+            "`!cargas` — 🔫 Cargas · 72h\n"
+            "`!plantas` — 🌿 Plantas · 3h\n"
+            "`!planos6` — 🟣 Planos x6 · 6h\n"
+            "`!planos8` — ⬜ Planos x8 · 8h\n"
+            "`!planos10` — 🟡 Planos x10 · 10h"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="📋 Gestión",
+        value=(
+            "`!mistimers` — Ver tus timers activos\n"
+            "`!cancelar <tipo> <numero>` — Cancelar un timer\n"
+            "`!stats` — Ver tus estadísticas personales\n"
+            "`!farmeritos` — Ranking general del server"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="🔧 Admin",
+        value="`!resettimers` — Eliminar todos los timers (solo admins)",
+        inline=False
+    )
+    add_footer(embed)
+    await ctx.send(embed=embed)
+
+# ---------------- CANCELAR ----------------
 
 @bot.command()
 async def cancelar(ctx, tipo, numero: int):
-    cursor.execute(
+    db_execute(
         "DELETE FROM timers WHERE user_id=? AND tipo=? AND numero=?",
         (ctx.author.id, tipo.capitalize(), numero)
     )
-    db.commit()
-    await ctx.send(f"🛑 {tipo} #{numero} cancelado.")
+    embed = discord.Embed(
+        description=f"🛑 **{tipo} #{numero}** cancelado.",
+        color=0xe74c3c
+    )
+    add_footer(embed)
+    await ctx.send(embed=embed)
 
 # ---------------- VER MIS TIMERS ----------------
 
@@ -252,95 +352,93 @@ class CancelarView(discord.ui.View):
     def __init__(self, user_id, tipo, numero):
         super().__init__(timeout=None)
         self.user_id = user_id
-        self.tipo = tipo
-        self.numero = numero
+        self.tipo    = tipo
+        self.numero  = numero
 
     @discord.ui.button(label="❌ Cancelar", style=discord.ButtonStyle.danger)
     async def cancelar(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message(
-                "No puedes cancelar timers de otro usuario.",
+                "No podés cancelar timers de otro usuario.",
                 ephemeral=True
             )
             return
-
-        cursor.execute(
+        db_execute(
             "DELETE FROM timers WHERE user_id=? AND tipo=? AND numero=?",
             (self.user_id, self.tipo, self.numero)
         )
-        db.commit()
-
-        await interaction.response.edit_message(
-            content="🛑 Timer cancelado",
-            embed=None,
-            view=None
-        )
+        embed = discord.Embed(description="🛑 Timer cancelado.", color=0xe74c3c)
+        add_footer(embed)
+        await interaction.response.edit_message(embed=embed, view=None)
 
 @bot.command()
 async def mistimers(ctx):
-    cursor.execute("SELECT * FROM timers WHERE user_id=?", (ctx.author.id,))
-    timers = cursor.fetchall()
+    timers = db_fetchall("SELECT * FROM timers WHERE user_id=?", (ctx.author.id,))
 
     if not timers:
-        await ctx.send("No tienes timers activos.")
+        embed = discord.Embed(description="✅ No tenés timers activos.", color=0x2ecc71)
+        add_footer(embed)
+        await ctx.send(embed=embed)
         return
 
     for t in timers:
-        embed = discord.Embed(title=f"{t[2]} #{t[3]}", color=0x3498db)
-        embed.add_field(name="Progreso", value=barra(t[4], t[5]), inline=False)
+        color = COLORES.get(t[2], 0x3498db)
+        icono = ICONOS.get(t[2], "⏱")
+        embed = discord.Embed(title=f"{icono} {t[2]} #{t[3]}", color=color)
+        embed.add_field(name="📊 Progreso", value=barra(t[4], t[5]),     inline=False)
+        embed.add_field(name="🕐 Fin ARG",  value=f"`{hora_arg(t[5])}`", inline=True)
+        embed.add_field(name="🌐 Fin HUB",  value=f"`{hora_hub(t[5])}`", inline=True)
+        embed.add_field(name="📅 Finaliza", value=f"<t:{t[5]}:R>",       inline=True)
+        add_footer(embed)
         await ctx.send(embed=embed, view=CancelarView(ctx.author.id, t[2], t[3]))
 
 # ---------------- PANEL ----------------
 
 class Panel(discord.ui.View):
 
-    # --- Fila 1 ---
-
-    @discord.ui.button(label="📦 Cajas", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="📦 Cajas",      style=discord.ButtonStyle.primary,   row=0)
     async def cajas(self, interaction: discord.Interaction, button: discord.ui.Button):
         ctx = await bot.get_context(interaction.message)
         ctx.author = interaction.user
         await iniciar_timer(ctx, "Cajas", 3)
         await interaction.response.defer()
 
-    @discord.ui.button(label="💰 Robo", style=discord.ButtonStyle.danger, row=0)
+    @discord.ui.button(label="💰 Robo",       style=discord.ButtonStyle.danger,    row=0)
     async def robo(self, interaction: discord.Interaction, button: discord.ui.Button):
         ctx = await bot.get_context(interaction.message)
         ctx.author = interaction.user
         await iniciar_timer(ctx, "Robo", 2)
         await interaction.response.defer()
 
-    @discord.ui.button(label="👷 Capataz", style=discord.ButtonStyle.success, row=0)
+    @discord.ui.button(label="👷 Capataz",    style=discord.ButtonStyle.success,   row=0)
     async def capataz(self, interaction: discord.Interaction, button: discord.ui.Button):
         ctx = await bot.get_context(interaction.message)
         ctx.author = interaction.user
         await iniciar_timer(ctx, "Capataz", 6)
         await interaction.response.defer()
 
-    @discord.ui.button(label="🔫 Cargas", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="🔫 Cargas",     style=discord.ButtonStyle.secondary, row=0)
     async def cargas(self, interaction: discord.Interaction, button: discord.ui.Button):
         ctx = await bot.get_context(interaction.message)
         ctx.author = interaction.user
         await iniciar_timer(ctx, "Cargas", 72)
         await interaction.response.defer()
 
-    # --- Fila 2 ---
-
-    @discord.ui.button(label="🌿 Plantas", style=discord.ButtonStyle.success, row=1)
+    @discord.ui.button(label="🌿 Plantas",    style=discord.ButtonStyle.success,   row=1)
     async def plantas(self, interaction: discord.Interaction, button: discord.ui.Button):
         ctx = await bot.get_context(interaction.message)
         ctx.author = interaction.user
         await iniciar_timer(ctx, "Plantas", 3)
         await interaction.response.defer()
 
-    @discord.ui.button(label="🟣 Planos x6", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="🟣 Planos x6",  style=discord.ButtonStyle.primary,   row=1)
     async def planos6(self, interaction: discord.Interaction, button: discord.ui.Button):
         ctx = await bot.get_context(interaction.message)
         ctx.author = interaction.user
         await iniciar_timer(ctx, "Planos x6", 6)
         await interaction.response.defer()
 
-    @discord.ui.button(label="⬜ Planos x8", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="⬜ Planos x8",  style=discord.ButtonStyle.secondary, row=1)
     async def planos8(self, interaction: discord.Interaction, button: discord.ui.Button):
         ctx = await bot.get_context(interaction.message)
         ctx.author = interaction.user
@@ -357,46 +455,53 @@ class Panel(discord.ui.View):
 @bot.command()
 async def panel(ctx):
     embed = discord.Embed(
-        title="🎮 Panel de Timers",
+        title="🎮 Panel de Timers — KittyTimer",
         description=(
-            "**Fila 1 — Farm principal**\n"
-            "📦 Cajas · 3h  |  💰 Robo · 2h  |  👷 Capataz · 6h  |  🔫 Cargas · 72h\n\n"
-            "**Fila 2 — Plantas & Planos**\n"
-            "🌿 Plantas · 3h  |  🟣 Planos x6 · 6h  |  ⬜ Planos x8 · 8h  |  🟡 Planos x10 · 10h"
+            "Usá los botones para iniciar tu timer.\n\n"
+            "**🏭 Farm Principal**\n"
+            "📦 Cajas `3h`  ·  💰 Robo `2h`  ·  👷 Capataz `6h`  ·  🔫 Cargas `72h`\n\n"
+            "**🌱 Plantas & Planos**\n"
+            "🌿 Plantas `3h`  ·  🟣 Planos x6 `6h`  ·  ⬜ Planos x8 `8h`  ·  🟡 Planos x10 `10h`\n\n"
+            "Usá `!ayuda` para ver todos los comandos."
         ),
         color=0x5865F2
     )
+    embed.set_image(url=GIF_PANEL)
+    add_footer(embed)
     await ctx.send(embed=embed, view=Panel())
 
 # ---------------- ACTUALIZAR BARRAS ----------------
 
 @tasks.loop(seconds=10)
 async def actualizar_barras():
-    cursor.execute("SELECT * FROM timers")
-    timers = cursor.fetchall()
-
-    canal = bot.get_channel(CANAL_REGISTRO)
+    timers = db_fetchall("SELECT * FROM timers")
+    canal  = bot.get_channel(CANAL_REGISTRO)
     if canal is None:
         return
 
     for t in timers:
-        inicio = t[4]
-        fin = t[5]
+        inicio, fin = t[4], t[5]
+        color = COLORES.get(t[2], 0x00ffaa)
+        icono = ICONOS.get(t[2], "⏱")
 
-        embed = discord.Embed(title=f"⏱ {t[2]} #{t[3]}", color=0x00ffaa)
-        embed.add_field(name="Usuario", value=f"<@{t[0]}>", inline=False)
+        embed = discord.Embed(title=f"{icono} {t[2]} #{t[3]}", color=color)
+        embed.add_field(name="👤 Usuario",        value=f"<@{t[0]}>",                       inline=True)
+        embed.add_field(name="⏳ Duración total", value=f"`{tiempo_restante(fin - inicio)}`", inline=True)
+        embed.add_field(name="\u200b",            value="\u200b",                            inline=True)
 
         if now() >= fin:
             embed.add_field(
-                name="Progreso",
-                value="▰" * 14 + " 100%\n✅ Finalizado",
+                name="📊 Progreso",
+                value="▰" * 14 + " **100%**\n✅ `Finalizado`",
                 inline=False
             )
         else:
-            embed.add_field(name="Progreso", value=barra(inicio, fin), inline=False)
+            embed.add_field(name="📊 Progreso", value=barra(inicio, fin), inline=False)
 
-        embed.add_field(name="Fin ARG", value=hora_arg(fin))
-        embed.add_field(name="Fin HUB", value=hora_hub(fin))
+        embed.add_field(name="🕐 Fin ARG", value=f"`{hora_arg(fin)}`", inline=True)
+        embed.add_field(name="🌐 Fin HUB", value=f"`{hora_hub(fin)}`", inline=True)
+        embed.add_field(name="📅 Finaliza", value=f"<t:{fin}:R>",      inline=True)
+        add_footer(embed)
 
         try:
             msg = await canal.fetch_message(t[6])
@@ -416,45 +521,41 @@ async def dashboard():
     if canal is None:
         return
 
-    cursor.execute("SELECT msg_id FROM dashboard")
-    data = cursor.fetchone()
-
+    data = db_fetchone("SELECT msg_id FROM dashboard")
     if data:
         try:
             dashboard_msg = await canal.fetch_message(data[0])
         except:
             dashboard_msg = None
 
-    cursor.execute("SELECT * FROM timers")
-    timers = cursor.fetchall()
+    timers = db_fetchall("SELECT * FROM timers")
     timers = sorted(timers, key=lambda x: x[5])
 
     texto = ""
-
     for t in timers:
         restante = t[5] - now()
         if restante <= 0:
             continue
-        texto += f"👤 <@{t[0]}>\n"
-        texto += f"🎯 {t[2]} #{t[3]}\n"
+        icono  = ICONOS.get(t[2], "⏱")
+        texto += f"**{icono} {t[2]} #{t[3]}** — <@{t[0]}>\n"
         texto += f"{barra(t[4], t[5])}\n"
-        texto += f"Fin ARG: {hora_arg(t[5])}\n"
-        texto += f"Fin HUB: {hora_hub(t[5])}\n\n"
+        texto += f"🕐 `{hora_arg(t[5])}` · 🌐 `{hora_hub(t[5])}` · <t:{t[5]}:R>\n"
+        texto += "─────────────────────\n"
 
     if texto == "":
-        texto = "No hay timers activos."
+        texto = "✅ No hay timers activos en este momento."
 
     embed = discord.Embed(
-        title="📊 Dashboard Farm Server",
+        title="📊 Dashboard — KittyTimer",
         description=texto,
-        color=0x2ecc71
+        color=0x5865F2
     )
+    add_footer(embed)
 
     if dashboard_msg is None:
         dashboard_msg = await canal.send(embed=embed)
-        cursor.execute("DELETE FROM dashboard")
-        cursor.execute("INSERT INTO dashboard VALUES (?)", (dashboard_msg.id,))
-        db.commit()
+        db_execute("DELETE FROM dashboard")
+        db_execute("INSERT INTO dashboard VALUES (?)", (dashboard_msg.id,))
     else:
         try:
             await dashboard_msg.edit(embed=embed)
@@ -465,78 +566,103 @@ async def dashboard():
 
 @tasks.loop(seconds=10)
 async def finalizar():
-    cursor.execute("SELECT * FROM timers WHERE fin <= ?", (now(),))
-    lista = cursor.fetchall()
-
+    lista = db_fetchall("SELECT * FROM timers WHERE fin <= ?", (now(),))
     canal = bot.get_channel(CANAL_AVISOS)
     if canal is None:
         return
 
     for t in lista:
-        user = await bot.fetch_user(t[0])
+        user  = await bot.fetch_user(t[0])
+        icono = ICONOS.get(t[2], "⏱")
+        color = COLORES.get(t[2], 0x00ff00)
 
         embed = discord.Embed(
-            title="✅ Timer terminado",
-            description=f"{user.mention} terminó **{t[2]} #{t[3]}**",
-            color=0x00ff00
+            title="✅ ¡Timer terminado!",
+            description=(
+                f"{user.mention} terminó **{icono} {t[2]} #{t[3]}**\n\n"
+                f"¡Ya podés volver a iniciarlo!"
+            ),
+            color=color
         )
+        embed.set_image(url=GIF_AVISO)
+        add_footer(embed)
         await canal.send(embed=embed)
-
-        cursor.execute("DELETE FROM timers WHERE mensaje=?", (t[6],))
-        db.commit()
+        db_execute("DELETE FROM timers WHERE mensaje=?", (t[6],))
 
 # ---------------- STATS ----------------
 
 @bot.command()
 async def stats(ctx):
-    cursor.execute(
+    datos = db_fetchall(
         "SELECT tipo,cantidad FROM ranking WHERE user_id=?",
         (ctx.author.id,)
     )
-    datos = cursor.fetchall()
-
     embed = discord.Embed(
-        title=f"📊 Estadísticas de {ctx.author.name}",
+        title=f"📊 Estadísticas de {ctx.author.display_name}",
         color=0x3498db
     )
-    for tipo, cant in datos:
-        embed.add_field(name=tipo, value=f"{cant}", inline=False)
+    embed.set_thumbnail(url=ctx.author.display_avatar.url)
 
+    if not datos:
+        embed.description = "Todavía no iniciaste ningún timer."
+    else:
+        total = sum(cant for _, cant in datos)
+        for tipo, cant in sorted(datos, key=lambda x: x[1], reverse=True):
+            icono = ICONOS.get(tipo, "⏱")
+            embed.add_field(name=f"{icono} {tipo}", value=f"`{cant}` veces", inline=True)
+        embed.set_footer(text=f"{BOT_NAME} • Total: {total} timers iniciados")
+
+    add_footer(embed)
     await ctx.send(embed=embed)
 
 # ---------------- RANKING ----------------
 
 @bot.command()
 async def farmeritos(ctx):
-    embed = discord.Embed(title="🏆 Farmeritos Vividos", color=0xf1c40f)
+    embed = discord.Embed(
+        title="🏆 Farmeritos Vividos",
+        description="Top 5 jugadores por categoría",
+        color=0xf1c40f
+    )
+    medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
 
     for tipo in ["Cajas", "Robo", "Capataz", "Cargas", "Plantas", "Planos x6", "Planos x8", "Planos x10"]:
-        cursor.execute(
+        top   = db_fetchall(
             "SELECT username,cantidad FROM ranking WHERE tipo=? ORDER BY cantidad DESC LIMIT 5",
             (tipo,)
         )
-        top = cursor.fetchall()
-
-        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+        icono = ICONOS.get(tipo, "⏱")
         texto = ""
-
         for i, (user, cant) in enumerate(top):
-            texto += f"{medals[i]} {user} — {cant}\n"
+            texto += f"{medals[i]} **{user}** — `{cant}`\n"
+        if not texto:
+            texto = "*Sin datos aún*"
+        embed.add_field(name=f"{icono} {tipo}", value=texto, inline=True)
 
-        if texto == "":
-            texto = "Sin datos"
-
-        embed.add_field(name=tipo, value=texto, inline=False)
-
+    add_footer(embed)
     await ctx.send(embed=embed)
 
 # ---------------- READY ----------------
 
 @bot.event
 async def on_ready():
-    print("Bot conectado como", bot.user)
+    print(f"✅ {bot.user} conectado y listo.")
     dashboard.start()
     finalizar.start()
     actualizar_barras.start()
+
+    canal = bot.get_channel(CANAL_AVISOS)
+    if canal:
+        embed = discord.Embed(
+            title="🟢 KittyTimer Online",
+            description=(
+                "El bot se conectó correctamente y está listo.\n"
+                "Usá `!panel` para abrir el panel de timers."
+            ),
+            color=0x2ecc71
+        )
+        embed.set_image(url=GIF_ONLINE)
+        add_footer(embed)
+        await canal.send(embed=embed)
 
 bot.run(TOKEN)
