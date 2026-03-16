@@ -85,7 +85,10 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # para garantizar que los datos queden en la nube inmediatamente
 
 db = libsql.connect("timers.db", sync_url=TURSO_URL, auth_token=TURSO_TOKEN)
-db.sync()
+try:
+    db.sync()
+except:
+    pass
 
 for sql in [
     """CREATE TABLE IF NOT EXISTS timers(
@@ -110,18 +113,31 @@ for sql in [
     db.execute(sql)
 
 db.commit()
-db.sync()
+try:
+    db.sync()
+except:
+    pass
+
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+_executor = ThreadPoolExecutor(max_workers=1)
+
+def _sync_db():
+    try:
+        db.sync()
+    except:
+        pass
 
 def query(sql, params=()):
-    """Lee de la DB — hace sync primero para tener datos frescos."""
-    db.sync()
+    """Lee de la DB."""
     return db.execute(sql, params)
 
 def execute(sql, params=()):
-    """Escribe en la DB — hace commit+sync para persistir en Turso."""
+    """Escribe en la DB y sincroniza con Turso en background."""
     db.execute(sql, params)
     db.commit()
-    db.sync()
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(_executor, _sync_db)
 
 # ---------------- TIEMPO ----------------
 
