@@ -81,50 +81,47 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ---------------- DATABASE (TURSO) ----------------
+# Usamos sync_url para replicación — cada write hace commit+sync
+# para garantizar que los datos queden en la nube inmediatamente
 
 db = libsql.connect("timers.db", sync_url=TURSO_URL, auth_token=TURSO_TOKEN)
 db.sync()
 
-db.execute("""
-CREATE TABLE IF NOT EXISTS timers(
-user_id INTEGER,
-username TEXT,
-tipo TEXT,
-numero INTEGER,
-inicio INTEGER,
-fin INTEGER,
-mensaje INTEGER
-)
-""")
-
-db.execute("""
-CREATE TABLE IF NOT EXISTS ranking(
-user_id INTEGER,
-username TEXT,
-tipo TEXT,
-cantidad INTEGER
-)
-""")
-
-db.execute("""
-CREATE TABLE IF NOT EXISTS dashboard(
-msg_id INTEGER
-)
-""")
+for sql in [
+    """CREATE TABLE IF NOT EXISTS timers(
+        user_id INTEGER,
+        username TEXT,
+        tipo TEXT,
+        numero INTEGER,
+        inicio INTEGER,
+        fin INTEGER,
+        mensaje INTEGER
+    )""",
+    """CREATE TABLE IF NOT EXISTS ranking(
+        user_id INTEGER,
+        username TEXT,
+        tipo TEXT,
+        cantidad INTEGER
+    )""",
+    """CREATE TABLE IF NOT EXISTS dashboard(
+        msg_id INTEGER
+    )""",
+]:
+    db.execute(sql)
 
 db.commit()
 db.sync()
 
-def db_execute(query, params=()):
-    db.execute(query, params)
+def query(sql, params=()):
+    """Lee de la DB — hace sync primero para tener datos frescos."""
+    db.sync()
+    return db.execute(sql, params)
+
+def execute(sql, params=()):
+    """Escribe en la DB — hace commit+sync para persistir en Turso."""
+    db.execute(sql, params)
     db.commit()
     db.sync()
-
-def db_fetchone(query, params=()):
-    return db.execute(query, params).fetchone()
-
-def db_fetchall(query, params=()):
-    return db.execute(query, params).fetchall()
 
 # ---------------- TIEMPO ----------------
 
@@ -133,48 +130,27 @@ def now():
 
 def hora_arg(ts):
     utc = datetime.utcfromtimestamp(ts)
-    argentina = utc - timedelta(hours=3)
-    return argentina.strftime("%H:%M")
+    return (utc - timedelta(hours=3)).strftime("%H:%M")
 
 def hora_hub(ts):
     utc = datetime.utcfromtimestamp(ts)
-    argentina = utc - timedelta(hours=3)
-    hub = argentina + timedelta(hours=3)
-    return hub.strftime("%H:%M")
+    return (utc - timedelta(hours=3) + timedelta(hours=3)).strftime("%H:%M")
 
 def tiempo_restante(seg):
-    horas = seg // 3600
-    minutos = (seg % 3600) // 60
-    if horas > 0:
-        return f"{horas}h {minutos}m"
-    else:
-        return f"{minutos}m"
+    h = seg // 3600
+    m = (seg % 3600) // 60
+    return f"{h}h {m}m" if h > 0 else f"{m}m"
 
 # ---------------- BARRA ----------------
 
 def barra(inicio, fin):
-    total = fin - inicio
-    progreso = now() - inicio
-
-    if progreso < 0:
-        progreso = 0
-    if progreso > total:
-        progreso = total
-    if total <= 0:
-        porcentaje = 1
-    else:
-        porcentaje = progreso / total
-
-    bloques = 14
-    llenos = int(bloques * porcentaje)
-    vacios = bloques - llenos
-    bar = "▰" * llenos + "▱" * vacios
-
-    restante = fin - now()
-    if restante < 0:
-        restante = 0
-
-    return f"{bar} **{int(porcentaje*100)}%**\n⚡ Restante: `{tiempo_restante(restante)}`"
+    total    = fin - inicio
+    progreso = max(0, min(now() - inicio, total))
+    pct      = progreso / total if total > 0 else 1
+    llenos   = int(14 * pct)
+    bar      = "▰" * llenos + "▱" * (14 - llenos)
+    restante = max(0, fin - now())
+    return f"{bar} **{int(pct*100)}%**\n⚡ Restante: `{tiempo_restante(restante)}`"
 
 # ---------------- FOOTER ----------------
 
@@ -186,31 +162,18 @@ def add_footer(embed):
 # ---------------- RANKING ----------------
 
 def sumar_ranking(user_id, username, tipo):
-    data = db_fetchone(
-        "SELECT cantidad FROM ranking WHERE user_id=? AND tipo=?",
-        (user_id, tipo)
-    )
-    if data:
-        db_execute(
-            "UPDATE ranking SET cantidad=cantidad+1 WHERE user_id=? AND tipo=?",
-            (user_id, tipo)
-        )
+    row = query("SELECT cantidad FROM ranking WHERE user_id=? AND tipo=?", (user_id, tipo)).fetchone()
+    if row:
+        execute("UPDATE ranking SET cantidad=cantidad+1 WHERE user_id=? AND tipo=?", (user_id, tipo))
     else:
-        db_execute(
-            "INSERT INTO ranking VALUES (?,?,?,1)",
-            (user_id, username, tipo)
-        )
+        execute("INSERT INTO ranking VALUES (?,?,?,1)", (user_id, username, tipo))
 
 # ---------------- TIMER ----------------
-# Función base: recibe channel y user directamente
-# Esto evita el problema del ctx falso en los botones del panel
 
-async def iniciar_timer_raw(channel, user, tipo, horas):
-    data = db_fetchone(
-        "SELECT MAX(numero) FROM timers WHERE user_id=? AND tipo=?",
-        (user.id, tipo)
-    )
-    numero = 1 if data[0] is None else data[0] + 1
+async def iniciar_timer_raw(user, tipo, horas):
+    """Crea un timer. Siempre postea en CANAL_REGISTRO."""
+    row    = query("SELECT MAX(numero) FROM timers WHERE user_id=? AND tipo=?", (user.id, tipo)).fetchone()
+    numero = 1 if row[0] is None else row[0] + 1
 
     inicio = now()
     fin    = inicio + round(horas * 3600)
@@ -218,28 +181,26 @@ async def iniciar_timer_raw(channel, user, tipo, horas):
     icono  = ICONOS.get(tipo, "⏱")
 
     embed = discord.Embed(title=f"{icono} {tipo} #{numero}", color=color)
-    embed.add_field(name="👤 Usuario",  value=user.mention,          inline=True)
-    embed.add_field(name="⏳ Duración", value=f"`{int(horas)}h`",     inline=True)
-    embed.add_field(name="\u200b",      value="\u200b",               inline=True)
-    embed.add_field(name="📊 Progreso", value=barra(inicio, fin),     inline=False)
-    embed.add_field(name="🕐 Fin ARG",  value=f"`{hora_arg(fin)}`",   inline=True)
-    embed.add_field(name="🌐 Fin HUB",  value=f"`{hora_hub(fin)}`",   inline=True)
-    embed.add_field(name="📅 Finaliza", value=f"<t:{fin}:R>",         inline=True)
+    embed.add_field(name="👤 Usuario",  value=user.mention,        inline=True)
+    embed.add_field(name="⏳ Duración", value=f"`{int(horas)}h`",   inline=True)
+    embed.add_field(name="\u200b",      value="\u200b",             inline=True)
+    embed.add_field(name="📊 Progreso", value=barra(inicio, fin),   inline=False)
+    embed.add_field(name="🕐 Fin ARG",  value=f"`{hora_arg(fin)}`", inline=True)
+    embed.add_field(name="🌐 Fin HUB",  value=f"`{hora_hub(fin)}`", inline=True)
+    embed.add_field(name="📅 Finaliza", value=f"<t:{fin}:R>",       inline=True)
     add_footer(embed)
 
-    # El timer siempre se postea en CANAL_REGISTRO
-    canal_registro = bot.get_channel(CANAL_REGISTRO)
-    msg = await canal_registro.send(embed=embed)
+    canal = bot.get_channel(CANAL_REGISTRO)
+    msg   = await canal.send(embed=embed)
 
-    # Guardamos display_name para que las menciones funcionen siempre
-    db_execute(
+    execute(
         "INSERT INTO timers VALUES (?,?,?,?,?,?,?)",
         (user.id, user.display_name, tipo, numero, inicio, fin, msg.id)
     )
     sumar_ranking(user.id, user.display_name, tipo)
 
 async def iniciar_timer(ctx, tipo, horas):
-    await iniciar_timer_raw(ctx.channel, ctx.author, tipo, horas)
+    await iniciar_timer_raw(ctx.author, tipo, horas)
 
 # ---------------- COMANDOS ----------------
 
@@ -279,14 +240,18 @@ async def planos10(ctx):
 async def test(ctx):
     await iniciar_timer(ctx, "Test", 0.02)
 
+# ---------------- RESET (arreglado para Turso) ----------------
+
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def resettimers(ctx):
-    db_execute("DELETE FROM timers")
-    db_execute("DELETE FROM dashboard")
+    global dashboard_msg
+    execute("DELETE FROM timers")
+    execute("DELETE FROM dashboard")
+    dashboard_msg = None
     embed = discord.Embed(
         title="🧹 Base de datos reiniciada",
-        description="Todos los timers fueron eliminados.",
+        description="Todos los timers fueron eliminados de Turso.",
         color=0xe74c3c
     )
     add_footer(embed)
@@ -303,7 +268,7 @@ async def ayuda(ctx):
     )
     embed.add_field(
         name="🎮 Panel",
-        value="`!panel` — Abre el panel de botones para iniciar timers rápido",
+        value="`!panel` — Abre el panel con botones para iniciar timers",
         inline=False
     )
     embed.add_field(
@@ -355,7 +320,7 @@ class CancelarView(discord.ui.View):
                 ephemeral=True
             )
             return
-        db_execute(
+        execute(
             "DELETE FROM timers WHERE user_id=? AND tipo=? AND numero=?",
             (self.user_id, self.tipo, self.numero)
         )
@@ -365,12 +330,10 @@ class CancelarView(discord.ui.View):
 
 @bot.command()
 async def mistimers(ctx):
-    # Sync antes de leer para asegurarse de tener datos frescos de Turso
-    db.sync()
-    timers = db_fetchall(
+    timers = query(
         "SELECT * FROM timers WHERE user_id=?",
         (ctx.author.id,)
-    )
+    ).fetchall()
 
     if not timers:
         embed = discord.Embed(description="✅ No tenés timers activos.", color=0x2ecc71)
@@ -390,50 +353,48 @@ async def mistimers(ctx):
         await ctx.send(embed=embed, view=CancelarView(ctx.author.id, t[2], t[3]))
 
 # ---------------- PANEL ----------------
-# FIX: Los botones usan interaction.channel e interaction.user directamente
-# en vez de get_context() que causaba el error rojo y el ctx falso
 
 class Panel(discord.ui.View):
 
     @discord.ui.button(label="📦 Cajas",      style=discord.ButtonStyle.primary,   row=0)
     async def cajas(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
-        await iniciar_timer_raw(interaction.channel, interaction.user, "Cajas", 3)
+        await iniciar_timer_raw(interaction.user, "Cajas", 3)
 
     @discord.ui.button(label="💰 Robo",       style=discord.ButtonStyle.danger,    row=0)
     async def robo(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
-        await iniciar_timer_raw(interaction.channel, interaction.user, "Robo", 2)
+        await iniciar_timer_raw(interaction.user, "Robo", 2)
 
     @discord.ui.button(label="👷 Capataz",    style=discord.ButtonStyle.success,   row=0)
     async def capataz(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
-        await iniciar_timer_raw(interaction.channel, interaction.user, "Capataz", 6)
+        await iniciar_timer_raw(interaction.user, "Capataz", 6)
 
     @discord.ui.button(label="🔫 Cargas",     style=discord.ButtonStyle.secondary, row=0)
     async def cargas(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
-        await iniciar_timer_raw(interaction.channel, interaction.user, "Cargas", 72)
+        await iniciar_timer_raw(interaction.user, "Cargas", 72)
 
     @discord.ui.button(label="🌿 Plantas",    style=discord.ButtonStyle.success,   row=1)
     async def plantas(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
-        await iniciar_timer_raw(interaction.channel, interaction.user, "Plantas", 3)
+        await iniciar_timer_raw(interaction.user, "Plantas", 3)
 
     @discord.ui.button(label="🟣 Planos x6",  style=discord.ButtonStyle.primary,   row=1)
     async def planos6(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
-        await iniciar_timer_raw(interaction.channel, interaction.user, "Planos x6", 6)
+        await iniciar_timer_raw(interaction.user, "Planos x6", 6)
 
     @discord.ui.button(label="⬜ Planos x8",  style=discord.ButtonStyle.secondary, row=1)
     async def planos8(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
-        await iniciar_timer_raw(interaction.channel, interaction.user, "Planos x8", 8)
+        await iniciar_timer_raw(interaction.user, "Planos x8", 8)
 
     @discord.ui.button(label="🟡 Planos x10", style=discord.ButtonStyle.secondary, row=1)
     async def planos10(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
-        await iniciar_timer_raw(interaction.channel, interaction.user, "Planos x10", 10)
+        await iniciar_timer_raw(interaction.user, "Planos x10", 10)
 
 @bot.command()
 async def panel(ctx):
@@ -457,7 +418,7 @@ async def panel(ctx):
 
 @tasks.loop(seconds=10)
 async def actualizar_barras():
-    timers = db_fetchall("SELECT * FROM timers")
+    timers = query("SELECT * FROM timers").fetchall()
     canal  = bot.get_channel(CANAL_REGISTRO)
     if canal is None:
         return
@@ -501,16 +462,16 @@ async def cargar_dashboard_msg():
     canal = bot.get_channel(CANAL_DASHBOARD)
     if canal is None:
         return
-    data = db_fetchone("SELECT msg_id FROM dashboard")
-    if data:
+    row = query("SELECT msg_id FROM dashboard").fetchone()
+    if row:
         try:
-            dashboard_msg = await canal.fetch_message(data[0])
+            dashboard_msg = await canal.fetch_message(row[0])
         except:
-            db_execute("DELETE FROM dashboard")
+            execute("DELETE FROM dashboard")
             dashboard_msg = None
 
 def build_dashboard_embed():
-    timers = db_fetchall("SELECT * FROM timers")
+    timers = query("SELECT * FROM timers").fetchall()
     timers = sorted(timers, key=lambda x: x[5])
 
     texto = ""
@@ -519,13 +480,12 @@ def build_dashboard_embed():
         if restante <= 0:
             continue
         icono  = ICONOS.get(t[2], "⏱")
-        # Usamos mention con ID para que Discord siempre resuelva el usuario
         texto += f"**{icono} {t[2]} #{t[3]}** — <@{t[0]}>\n"
         texto += f"{barra(t[4], t[5])}\n"
         texto += f"🕐 `{hora_arg(t[5])}` · 🌐 `{hora_hub(t[5])}` · <t:{t[5]}:R>\n"
         texto += "─────────────────────\n"
 
-    if texto == "":
+    if not texto:
         texto = "✅ No hay timers activos en este momento."
 
     embed = discord.Embed(
@@ -539,7 +499,6 @@ def build_dashboard_embed():
 @tasks.loop(seconds=10)
 async def dashboard():
     global dashboard_msg
-
     canal = bot.get_channel(CANAL_DASHBOARD)
     if canal is None:
         return
@@ -548,13 +507,13 @@ async def dashboard():
 
     if dashboard_msg is None:
         dashboard_msg = await canal.send(embed=embed)
-        db_execute("DELETE FROM dashboard")
-        db_execute("INSERT INTO dashboard VALUES (?)", (dashboard_msg.id,))
+        execute("DELETE FROM dashboard")
+        execute("INSERT INTO dashboard VALUES (?)", (dashboard_msg.id,))
     else:
         try:
             await dashboard_msg.edit(embed=embed)
         except discord.NotFound:
-            db_execute("DELETE FROM dashboard")
+            execute("DELETE FROM dashboard")
             dashboard_msg = None
         except Exception:
             pass
@@ -563,16 +522,14 @@ async def dashboard():
 
 @tasks.loop(seconds=10)
 async def finalizar():
-    # Sync para asegurarse de leer datos frescos
-    db.sync()
-    lista = db_fetchall("SELECT * FROM timers WHERE fin <= ?", (now(),))
+    lista = query("SELECT * FROM timers WHERE fin <= ?", (now(),)).fetchall()
     canal = bot.get_channel(CANAL_AVISOS)
     if canal is None:
         return
 
     for t in lista:
         try:
-            user = await bot.fetch_user(t[0])
+            user    = await bot.fetch_user(t[0])
             mention = user.mention
         except:
             mention = f"<@{t[0]}>"
@@ -582,28 +539,25 @@ async def finalizar():
 
         embed = discord.Embed(
             title="✅ ¡Timer terminado!",
-            description=(
-                f"{mention} terminó **{icono} {t[2]} #{t[3]}**\n\n"
-                f"¡Ya podés volver a iniciarlo!"
-            ),
+            description=f"{mention} terminó **{icono} {t[2]} #{t[3]}**\n\n¡Ya podés volver a iniciarlo!",
             color=color
         )
         embed.set_image(url=GIF_AVISO)
         add_footer(embed)
 
-        # Primero enviamos el aviso, DESPUÉS borramos de la DB
+        # Primero avisar, DESPUÉS borrar
         await canal.send(embed=embed)
-        db_execute("DELETE FROM timers WHERE mensaje=?", (t[6],))
+        execute("DELETE FROM timers WHERE mensaje=?", (t[6],))
 
 # ---------------- STATS ----------------
 
 @bot.command()
 async def stats(ctx):
-    db.sync()
-    datos = db_fetchall(
+    datos = query(
         "SELECT tipo,cantidad FROM ranking WHERE user_id=?",
         (ctx.author.id,)
-    )
+    ).fetchall()
+
     embed = discord.Embed(
         title=f"📊 Estadísticas de {ctx.author.display_name}",
         color=0x3498db
@@ -613,7 +567,7 @@ async def stats(ctx):
     if not datos:
         embed.description = "Todavía no iniciaste ningún timer."
     else:
-        total = sum(cant for _, cant in datos)
+        total = sum(c for _, c in datos)
         for tipo, cant in sorted(datos, key=lambda x: x[1], reverse=True):
             icono = ICONOS.get(tipo, "⏱")
             embed.add_field(name=f"{icono} {tipo}", value=f"`{cant}` veces", inline=True)
@@ -626,24 +580,16 @@ async def stats(ctx):
 
 @bot.command()
 async def farmeritos(ctx):
-    embed = discord.Embed(
-        title="🏆 Farmeritos Vividos",
-        description="Top 5 jugadores por categoría",
-        color=0xf1c40f
-    )
+    embed  = discord.Embed(title="🏆 Farmeritos Vividos", description="Top 5 por categoría", color=0xf1c40f)
     medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
 
     for tipo in ["Cajas", "Robo", "Capataz", "Cargas", "Plantas", "Planos x6", "Planos x8", "Planos x10"]:
-        top   = db_fetchall(
+        top   = query(
             "SELECT username,cantidad FROM ranking WHERE tipo=? ORDER BY cantidad DESC LIMIT 5",
             (tipo,)
-        )
+        ).fetchall()
         icono = ICONOS.get(tipo, "⏱")
-        texto = ""
-        for i, (user, cant) in enumerate(top):
-            texto += f"{medals[i]} **{user}** — `{cant}`\n"
-        if not texto:
-            texto = "*Sin datos aún*"
+        texto = "".join(f"{medals[i]} **{u}** — `{c}`\n" for i, (u, c) in enumerate(top)) or "*Sin datos aún*"
         embed.add_field(name=f"{icono} {tipo}", value=texto, inline=True)
 
     add_footer(embed)
@@ -659,15 +605,11 @@ async def on_ready():
     finalizar.start()
     actualizar_barras.start()
 
-    # Mensaje de bot online va a REGISTRO, no a avisos
     canal = bot.get_channel(CANAL_REGISTRO)
     if canal:
         embed = discord.Embed(
             title="🟢 KittyTimer Online",
-            description=(
-                "El bot se conectó correctamente y está listo.\n"
-                "Usá `!panel` para abrir el panel de timers."
-            ),
+            description="El bot se conectó correctamente y está listo.\nUsá `!panel` para abrir el panel de timers.",
             color=0x2ecc71
         )
         embed.set_image(url=GIF_ONLINE)
