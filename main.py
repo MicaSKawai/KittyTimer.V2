@@ -271,26 +271,43 @@ async def resettimers(ctx):
 
     embed_working = discord.Embed(
         title="⏳ Reiniciando base de datos...",
-        description="Borrando todos los timers. Aguardá un momento.",
+        description="Borrando timers y limpiando canales. Aguardá un momento.",
         color=0xf39c12
     )
     add_footer(embed_working)
     msg = await ctx.send(embed=embed_working)
 
+    # Limpiar DB
     db_write("DELETE FROM timers")
     db_write("DELETE FROM dashboard")
     dashboard_msg = None
     ya_avisados = set()
 
+    # Borrar mensajes de CANAL_REGISTRO
+    try:
+        canal_reg = bot.get_channel(CANAL_REGISTRO)
+        if canal_reg:
+            await canal_reg.purge(limit=500)
+    except Exception as e:
+        print(f"[RESET] Error limpiando registro: {e}")
+
+    # Borrar mensajes de CANAL_AVISOS
+    try:
+        canal_avi = bot.get_channel(CANAL_AVISOS)
+        if canal_avi:
+            await canal_avi.purge(limit=500)
+    except Exception as e:
+        print(f"[RESET] Error limpiando avisos: {e}")
+
     try:
         turso.sync()
-        descripcion = "✅ Todos los timers fueron eliminados correctamente."
+        descripcion = "✅ Timers eliminados y canales limpiados correctamente."
         color = 0x2ecc71
     except Exception as e:
-        descripcion = f"⚠️ Timers borrados localmente pero el sync con Turso falló: `{e}`\nSe sincronizará automáticamente."
+        descripcion = f"⚠️ Timers borrados pero el sync con Turso falló: `{e}`"
         color = 0xe67e22
 
-    embed_done = discord.Embed(title="🧹 Base de datos reiniciada", description=descripcion, color=color)
+    embed_done = discord.Embed(title="🧹 Reset completo", description=descripcion, color=color)
     add_footer(embed_done)
     await msg.edit(embed=embed_done)
 
