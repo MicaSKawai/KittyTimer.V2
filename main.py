@@ -46,7 +46,7 @@ GIF_ONLINE = "https://i.imgur.com/C8IaPT6.gif"
 # ---------------- BOT INFO ----------------
 
 BOT_NAME = "KittyTimer"
-BOT_ICON = "https://i.imgur.com/4M34hi2.png"
+BOT_ICON = "https://i.imgur.com/3b7Kjh8.png"
 
 # ---------------- COLORES E ICONOS ----------------
 
@@ -59,6 +59,7 @@ COLORES = {
     "Planos x6":  0x9b59b6,
     "Planos x8":  0xbdc3c7,
     "Planos x10": 0xf1c40f,
+    "Ganzuas":    0xe67e22,
     "Test":       0xff6b6b,
 }
 
@@ -71,6 +72,7 @@ ICONOS = {
     "Planos x6":  "🟣",
     "Planos x8":  "⬜",
     "Planos x10": "🟡",
+    "Ganzuas":    "🗝️",
     "Test":       "🧪",
 }
 
@@ -169,7 +171,8 @@ def barra(inicio, fin):
 # ---------------- FOOTER ----------------
 
 def add_footer(embed):
-    embed.set_footer(text=f"{BOT_NAME} • Timer Bot", icon_url=BOT_ICON)
+    embed.set_footer(text="KittyTimer", icon_url=BOT_ICON)
+    embed.set_thumbnail(url=BOT_ICON)
     embed.timestamp = datetime.utcnow()
     return embed
 
@@ -256,14 +259,23 @@ async def planos10(ctx):
 async def test(ctx):
     await iniciar_timer(ctx, "Test", 0.02)
 
+@bot.command()
+async def ganzuas(ctx):
+    await iniciar_timer(ctx, "Ganzuas", 192)
+
 # ---------------- RESET ----------------
 
 @bot.command()
-@commands.has_permissions(administrator=True)
 async def resettimers(ctx):
     global dashboard_msg
 
-    # Aviso de inicio
+    # Verificación manual de admin
+    if not ctx.author.guild_permissions.administrator:
+        embed = discord.Embed(description="❌ Solo los administradores pueden usar este comando.", color=0xe74c3c)
+        add_footer(embed)
+        await ctx.send(embed=embed)
+        return
+
     embed_working = discord.Embed(
         title="⏳ Reiniciando base de datos...",
         description="Borrando todos los timers de Turso. Aguardá un momento.",
@@ -272,25 +284,19 @@ async def resettimers(ctx):
     add_footer(embed_working)
     msg = await ctx.send(embed=embed_working)
 
-    # Borrar todo localmente
     db_write("DELETE FROM timers")
     db_write("DELETE FROM dashboard")
     dashboard_msg = None
 
-    # Forzar sync con Turso de forma sincrónica para confirmar
     try:
         turso.sync()
-        descripcion = "✅ Todos los timers fueron eliminados correctamente de Turso."
+        descripcion = "✅ Todos los timers fueron eliminados correctamente."
         color = 0x2ecc71
     except Exception as e:
         descripcion = f"⚠️ Timers borrados localmente pero el sync con Turso falló: `{e}`\nSe sincronizará automáticamente."
         color = 0xe67e22
 
-    embed_done = discord.Embed(
-        title="🧹 Base de datos reiniciada",
-        description=descripcion,
-        color=color
-    )
+    embed_done = discord.Embed(title="🧹 Base de datos reiniciada", description=descripcion, color=color)
     add_footer(embed_done)
     await msg.edit(embed=embed_done)
 
@@ -308,7 +314,8 @@ async def ayuda(ctx):
         name="⏱ Timers",
         value=(
             "`!cajas` 📦 3h · `!robo` 💰 2h · `!capataz` 👷 6h · `!cargas` 🔫 72h\n"
-            "`!plantas` 🌿 3h · `!planos6` 🟣 6h · `!planos8` ⬜ 8h · `!planos10` 🟡 10h"
+            "`!plantas` 🌿 3h · `!planos6` 🟣 6h · `!planos8` ⬜ 8h · `!planos10` 🟡 10h\n"
+            "`!ganzuas` 🗝️ 8 días"
         ),
         inline=False
     )
@@ -369,6 +376,7 @@ async def mistimers(ctx):
 
 class Panel(discord.ui.View):
 
+    # Fila 1 — Farm principal (azul, rojo, verde, azul)
     @discord.ui.button(label="📦 Cajas",      style=discord.ButtonStyle.primary,   row=0)
     async def cajas(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
@@ -384,17 +392,18 @@ class Panel(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         await iniciar_timer_raw(interaction.user, "Capataz", 6)
 
-    @discord.ui.button(label="🔫 Cargas",     style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="🔫 Cargas",     style=discord.ButtonStyle.primary,   row=0)
     async def cargas(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         await iniciar_timer_raw(interaction.user, "Cargas", 72)
 
+    # Fila 2 — Plantas, Planos y Ganzúas (verde, gris, rojo, azul, gris)
     @discord.ui.button(label="🌿 Plantas",    style=discord.ButtonStyle.success,   row=1)
     async def plantas(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         await iniciar_timer_raw(interaction.user, "Plantas", 3)
 
-    @discord.ui.button(label="🟣 Planos x6",  style=discord.ButtonStyle.primary,   row=1)
+    @discord.ui.button(label="🟣 Planos x6",  style=discord.ButtonStyle.secondary, row=1)
     async def planos6(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         await iniciar_timer_raw(interaction.user, "Planos x6", 6)
@@ -409,6 +418,12 @@ class Panel(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         await iniciar_timer_raw(interaction.user, "Planos x10", 10)
 
+    # Fila 3 — Ganzúas solo
+    @discord.ui.button(label="🗝️ Ganzúas · 8d", style=discord.ButtonStyle.danger, row=2)
+    async def ganzuas(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        await iniciar_timer_raw(interaction.user, "Ganzuas", 192)
+
 @bot.command()
 async def panel(ctx):
     embed = discord.Embed(
@@ -419,6 +434,8 @@ async def panel(ctx):
             "📦 Cajas `3h`  ·  💰 Robo `2h`  ·  👷 Capataz `6h`  ·  🔫 Cargas `72h`\n\n"
             "**🌱 Plantas & Planos**\n"
             "🌿 Plantas `3h`  ·  🟣 Planos x6 `6h`  ·  ⬜ Planos x8 `8h`  ·  🟡 Planos x10 `10h`\n\n"
+            "**🗝️ Especial**\n"
+            "Ganzúas `8 días`\n\n"
             "Usá `!ayuda` para ver todos los comandos."
         ),
         color=0x5865F2
@@ -561,6 +578,8 @@ async def stats(ctx):
     datos = db_read("SELECT tipo,cantidad FROM ranking WHERE user_id=?", (ctx.author.id,))
     embed = discord.Embed(title=f"📊 Estadísticas de {ctx.author.display_name}", color=0x3498db)
     embed.set_thumbnail(url=ctx.author.display_avatar.url)
+    embed.set_footer(text="KittyTimer", icon_url=BOT_ICON)
+    embed.timestamp = datetime.utcnow()
 
     if not datos:
         embed.description = "Todavía no iniciaste ningún timer."
@@ -568,9 +587,8 @@ async def stats(ctx):
         total = sum(c for _, c in datos)
         for tipo, cant in sorted(datos, key=lambda x: x[1], reverse=True):
             embed.add_field(name=f"{ICONOS.get(tipo,'⏱')} {tipo}", value=f"`{cant}` veces", inline=True)
-        embed.set_footer(text=f"{BOT_NAME} • Total: {total} timers iniciados")
+        embed.set_footer(text=f"{BOT_NAME} • Total: {total} timers iniciados", icon_url=BOT_ICON)
 
-    add_footer(embed)
     await ctx.send(embed=embed)
 
 # ---------------- RANKING ----------------
@@ -580,7 +598,7 @@ async def farmeritos(ctx):
     embed  = discord.Embed(title="🏆 Farmeritos Vividos", description="Top 5 por categoría", color=0xf1c40f)
     medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
 
-    for tipo in ["Cajas", "Robo", "Capataz", "Cargas", "Plantas", "Planos x6", "Planos x8", "Planos x10"]:
+    for tipo in ["Cajas", "Robo", "Capataz", "Cargas", "Plantas", "Planos x6", "Planos x8", "Planos x10", "Ganzuas"]:
         top   = db_read("SELECT username,cantidad FROM ranking WHERE tipo=? ORDER BY cantidad DESC LIMIT 5", (tipo,))
         texto = "".join(f"{medals[i]} **{u}** — `{c}`\n" for i, (u, c) in enumerate(top)) or "*Sin datos aún*"
         embed.add_field(name=f"{ICONOS.get(tipo,'⏱')} {tipo}", value=texto, inline=True)
