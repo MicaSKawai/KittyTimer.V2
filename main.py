@@ -269,16 +269,9 @@ async def ganzuas(ctx):
 async def resettimers(ctx):
     global dashboard_msg
 
-    # Verificación manual de admin
-    if not ctx.author.guild_permissions.administrator:
-        embed = discord.Embed(description="❌ Solo los administradores pueden usar este comando.", color=0xe74c3c)
-        add_footer(embed)
-        await ctx.send(embed=embed)
-        return
-
     embed_working = discord.Embed(
         title="⏳ Reiniciando base de datos...",
-        description="Borrando todos los timers de Turso. Aguardá un momento.",
+        description="Borrando todos los timers. Aguardá un momento.",
         color=0xf39c12
     )
     add_footer(embed_working)
@@ -324,7 +317,6 @@ async def ayuda(ctx):
         value="`!mistimers` — Tus timers activos\n`!stats` — Tus estadísticas\n`!farmeritos` — Ranking general",
         inline=False
     )
-    embed.add_field(name="🔧 Admin", value="`!resettimers` — Borrar todos los timers", inline=False)
     add_footer(embed)
     await ctx.send(embed=embed)
 
