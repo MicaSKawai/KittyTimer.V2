@@ -31,11 +31,19 @@ TOKEN       = os.environ["DISCORD_TOKEN"]
 TURSO_URL   = os.environ["TURSO_URL"]
 TURSO_TOKEN = os.environ["TURSO_TOKEN"]
 
-# ---------------- CANALES ----------------
+# ---------------- CANALES (por nombre, funciona en cualquier server) ----------------
 
-CANAL_REGISTRO  = 1482912693680869426
-CANAL_AVISOS    = 1482912285230895205
-CANAL_DASHBOARD = 1482912464483127336
+NOMBRE_REGISTRO  = "registro"
+NOMBRE_AVISOS    = "avisos"
+NOMBRE_DASHBOARD = "dashboard"
+
+def get_canal(nombre):
+    nombre_lower = nombre.lower().strip()
+    for guild in bot.guilds:
+        for channel in guild.text_channels:
+            if nombre_lower in channel.name.lower():
+                return channel
+    return None
 
 # ---------------- GIFs ----------------
 
@@ -209,7 +217,7 @@ async def iniciar_timer_raw(user, tipo, horas):
     embed.add_field(name="📅 Finaliza", value=f"<t:{fin}:R>",       inline=True)
     add_footer(embed)
 
-    canal = bot.get_channel(CANAL_REGISTRO)
+    canal = get_canal(NOMBRE_REGISTRO)
     msg   = await canal.send(embed=embed)
 
     db_write(
@@ -285,7 +293,7 @@ async def resettimers(ctx):
 
     # Borrar mensajes de CANAL_REGISTRO
     try:
-        canal_reg = bot.get_channel(CANAL_REGISTRO)
+        canal_reg = get_canal(NOMBRE_REGISTRO)
         if canal_reg:
             await canal_reg.purge(limit=500)
     except Exception as e:
@@ -293,7 +301,7 @@ async def resettimers(ctx):
 
     # Borrar mensajes de CANAL_AVISOS
     try:
-        canal_avi = bot.get_channel(CANAL_AVISOS)
+        canal_avi = get_canal(NOMBRE_AVISOS)
         if canal_avi:
             await canal_avi.purge(limit=500)
     except Exception as e:
@@ -459,7 +467,7 @@ async def panel(ctx):
 @tasks.loop(seconds=10)
 async def actualizar_barras():
     timers = db_read("SELECT * FROM timers")
-    canal  = bot.get_channel(CANAL_REGISTRO)
+    canal  = get_canal(NOMBRE_REGISTRO)
     if canal is None:
         return
 
@@ -495,7 +503,7 @@ dashboard_msg = None
 
 async def cargar_dashboard_msg():
     global dashboard_msg
-    canal = bot.get_channel(CANAL_DASHBOARD)
+    canal = get_canal(NOMBRE_DASHBOARD)
     if canal is None:
         return
     row = db_readone("SELECT msg_id FROM dashboard")
@@ -532,7 +540,7 @@ def build_dashboard_embed():
 @tasks.loop(seconds=10)
 async def dashboard():
     global dashboard_msg
-    canal = bot.get_channel(CANAL_DASHBOARD)
+    canal = get_canal(NOMBRE_DASHBOARD)
     if canal is None:
         return
 
@@ -558,7 +566,7 @@ ya_avisados = set()  # IDs de mensajes ya procesados en esta sesión
 @tasks.loop(seconds=10)
 async def finalizar():
     lista = db_read("SELECT * FROM timers WHERE fin <= ?", (now(),))
-    canal = bot.get_channel(CANAL_AVISOS)
+    canal = get_canal(NOMBRE_AVISOS)
     if canal is None:
         return
 
@@ -641,7 +649,7 @@ async def on_command_error(ctx, error):
     finalizar.start()
     actualizar_barras.start()
 
-    canal = bot.get_channel(CANAL_REGISTRO)
+    canal = get_canal(NOMBRE_REGISTRO)
     if canal:
         embed = discord.Embed(
             title="🟢 KittyTimer Online",
