@@ -267,7 +267,7 @@ async def ganzuas(ctx):
 
 @bot.command()
 async def resettimers(ctx):
-    global dashboard_msg
+    global dashboard_msg, ya_avisados
 
     embed_working = discord.Embed(
         title="⏳ Reiniciando base de datos...",
@@ -280,6 +280,7 @@ async def resettimers(ctx):
     db_write("DELETE FROM timers")
     db_write("DELETE FROM dashboard")
     dashboard_msg = None
+    ya_avisados = set()
 
     try:
         turso.sync()
@@ -535,6 +536,8 @@ async def dashboard():
 
 # ---------------- FINALIZAR ----------------
 
+ya_avisados = set()  # IDs de mensajes ya procesados en esta sesión
+
 @tasks.loop(seconds=10)
 async def finalizar():
     lista = db_read("SELECT * FROM timers WHERE fin <= ?", (now(),))
@@ -543,6 +546,14 @@ async def finalizar():
         return
 
     for t in lista:
+        msg_id = t[6]
+        if msg_id in ya_avisados:
+            # Ya fue procesado, solo borrarlo si sigue en DB
+            db_write("DELETE FROM timers WHERE mensaje=?", (msg_id,))
+            continue
+
+        ya_avisados.add(msg_id)
+
         try:
             user    = await bot.fetch_user(t[0])
             mention = user.mention
@@ -561,7 +572,7 @@ async def finalizar():
         add_footer(embed)
 
         await canal.send(embed=embed)
-        db_write("DELETE FROM timers WHERE mensaje=?", (t[6],))
+        db_write("DELETE FROM timers WHERE mensaje=?", (msg_id,))
 
 # ---------------- STATS ----------------
 
@@ -601,7 +612,12 @@ async def farmeritos(ctx):
 # ---------------- READY ----------------
 
 @bot.event
-async def on_ready():
+async def on_command_error(ctx, error):
+    # Ignoramos errores de permisos silenciosamente
+    if isinstance(error, commands.MissingPermissions):
+        return
+    if isinstance(error, commands.CheckFailure):
+        return
     print(f"✅ {bot.user} conectado y listo.")
     await cargar_dashboard_msg()
     dashboard.start()
