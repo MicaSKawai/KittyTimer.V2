@@ -85,24 +85,17 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ================================================================
-# DATABASE — estrategia dual:
-# - sqlite3 local para todas las lecturas/escrituras (rápido, confiable)
-# - libsql sync en background para persistir en Turso (sobrevive reinicios)
-# ================================================================
+# ---------------- DATABASE ----------------
 
-# 1) Conexión Turso — sincroniza la DB local con la nube
 turso = libsql.connect("timers.db", sync_url=TURSO_URL, auth_token=TURSO_TOKEN)
 try:
-    turso.sync()  # baja datos de Turso al archivo local timers.db
+    turso.sync()
 except Exception as e:
     print(f"[TURSO] sync inicial falló: {e}")
 
-# 2) Conexión sqlite3 local — se usa para TODAS las queries
 con = sqlite3.connect("timers.db", check_same_thread=False)
 cur = con.cursor()
 
-# Crear tablas si no existen
 cur.executescript("""
 CREATE TABLE IF NOT EXISTS timers(
     user_id  INTEGER,
@@ -126,7 +119,6 @@ CREATE TABLE IF NOT EXISTS dashboard(
 con.commit()
 
 def db_write(sql, params=()):
-    """Escribe localmente y sincroniza con Turso en un hilo aparte."""
     cur.execute(sql, params)
     con.commit()
     def _push():
@@ -280,13 +272,11 @@ async def resettimers(ctx):
     add_footer(embed_working)
     msg = await ctx.send(embed=embed_working)
 
-    # Limpiar DB
     db_write("DELETE FROM timers")
     db_write("DELETE FROM dashboard")
     dashboard_msg = None
     ya_avisados = set()
 
-    # Borrar mensajes de CANAL_REGISTRO
     try:
         canal_reg = get_canal(CANAL_REGISTRO)
         if canal_reg:
@@ -294,7 +284,6 @@ async def resettimers(ctx):
     except Exception as e:
         print(f"[RESET] Error limpiando registro: {e}")
 
-    # Borrar mensajes de CANAL_AVISOS
     try:
         canal_avi = get_canal(CANAL_AVISOS)
         if canal_avi:
@@ -389,7 +378,6 @@ async def mistimers(ctx):
 
 class Panel(discord.ui.View):
 
-    # Fila 1 — Farm principal (azul, rojo, verde, azul)
     @discord.ui.button(label="📦 Cajas",      style=discord.ButtonStyle.primary,   row=0)
     async def cajas(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
@@ -410,7 +398,6 @@ class Panel(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         await iniciar_timer_raw(interaction.user, "Cargas", 72)
 
-    # Fila 2 — Plantas, Planos y Ganzúas (verde, gris, rojo, azul, gris)
     @discord.ui.button(label="🌿 Plantas",    style=discord.ButtonStyle.success,   row=1)
     async def plantas(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
@@ -431,7 +418,6 @@ class Panel(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         await iniciar_timer_raw(interaction.user, "Planos x10", 10)
 
-    # Fila 3 — Ganzúas solo
     @discord.ui.button(label="🗝️ Ganzúas · 8d", style=discord.ButtonStyle.danger, row=2)
     async def ganzuas(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
@@ -556,7 +542,7 @@ async def dashboard():
 
 # ---------------- FINALIZAR ----------------
 
-ya_avisados = set()  # IDs de mensajes ya procesados en esta sesión
+ya_avisados = set()
 
 @tasks.loop(seconds=10)
 async def finalizar():
@@ -568,7 +554,6 @@ async def finalizar():
     for t in lista:
         msg_id = t[6]
         if msg_id in ya_avisados:
-            # Ya fue procesado, solo borrarlo si sigue en DB
             db_write("DELETE FROM timers WHERE mensaje=?", (msg_id,))
             continue
 
@@ -629,16 +614,21 @@ async def farmeritos(ctx):
     add_footer(embed)
     await ctx.send(embed=embed)
 
-# ---------------- READY ----------------
+# ---------------- ERROR HANDLER ----------------
 
 @bot.event
 async def on_command_error(ctx, error):
-    # Ignoramos errores de permisos silenciosamente
     if isinstance(error, commands.MissingPermissions):
         return
     if isinstance(error, commands.CheckFailure):
         return
+
+# ---------------- READY ----------------
+
+@bot.event
+async def on_ready():
     print(f"✅ {bot.user} conectado y listo.")
+    await discord.utils.sleep_until(datetime.utcnow() + timedelta(seconds=5))
     await cargar_dashboard_msg()
     dashboard.start()
     finalizar.start()
