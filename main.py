@@ -236,7 +236,7 @@ async def cargas(ctx):
 
 @bot.command()
 async def plantas(ctx):
-    await iniciar_timer(ctx, "Plantas", 3)
+    await iniciar_timer(ctx, "Plantas", 1.5)
 
 @bot.command()
 async def planos6(ctx):
@@ -317,7 +317,7 @@ async def ayuda(ctx):
         name="⏱ Timers",
         value=(
             "`!cajas` 📦 3h · `!robo` 💰 2h · `!capataz` 👷 6h · `!cargas` 🔫 72h\n"
-            "`!plantas` 🌿 3h · `!planos6` 🟣 6h · `!planos8` ⬜ 8h · `!planos10` 🟡 10h\n"
+            "`!plantas` 🌿 1.5h · `!planos6` 🟣 6h · `!planos8` ⬜ 8h · `!planos10` 🟡 10h\n"
             "`!ganzuas` 🗝️ 8 días"
         ),
         inline=False
@@ -401,7 +401,7 @@ class Panel(discord.ui.View):
     @discord.ui.button(label="🌿 Plantas",    style=discord.ButtonStyle.success,   row=1)
     async def plantas(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
-        await iniciar_timer_raw(interaction.user, "Plantas", 3)
+        await iniciar_timer_raw(interaction.user, "Plantas", 1.5)
 
     @discord.ui.button(label="🟣 Planos x6",  style=discord.ButtonStyle.secondary, row=1)
     async def planos6(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -432,7 +432,7 @@ async def panel(ctx):
             "**🏭 Farm Principal**\n"
             "📦 Cajas `3h`  ·  💰 Robo `2h`  ·  👷 Capataz `6h`  ·  🔫 Cargas `72h`\n\n"
             "**🌱 Plantas & Planos**\n"
-            "🌿 Plantas `3h`  ·  🟣 Planos x6 `6h`  ·  ⬜ Planos x8 `8h`  ·  🟡 Planos x10 `10h`\n\n"
+            "🌿 Plantas `1.5h`  ·  🟣 Planos x6 `6h`  ·  ⬜ Planos x8 `8h`  ·  🟡 Planos x10 `10h`\n\n"
             "**🗝️ Especial**\n"
             "Ganzúas `8 días`\n\n"
             "Usá `!ayuda` para ver todos los comandos."
